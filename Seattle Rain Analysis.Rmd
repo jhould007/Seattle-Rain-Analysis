@@ -1,0 +1,406 @@
+---
+title: "Seattle Rain Analysis"
+author: "Josh Houlding"
+date: "2023-08-13"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# The objective
+I found this neat dataset on Kaggle called [Did it rain in Seattle? (1948-2017)](https://www.kaggle.com/datasets/rtatman/did-it-rain-in-seattle-19482017), comprised of weather data from sensor(s) at SeaTac International Airport near Seattle, Washington, USA from January 1st, 1948 to December 12th, 2017. I was very excited to delve into the data and see what insights came out of it. 
+
+# The data
+The dataset contains a single CSV file with data on amounts of precipitation (inches) and the maximum and minimum recorded temperatures for each day from 1948-01-01 to 2017-12-12, which is over 25,000 days' worth of data. It also has a true/false column for whether it rained or not on a specific day. 
+
+## Limitations of the data
+* The data is only concerned with rain, so there is no data on sleet, hail, snow, or other types of precipitation.
+* The data does not include measurements such as humidity, wind speed, wind direction, or atmospheric pressure, all of which would be useful for a deeper analysis. 
+
+# Loading the data
+We start by loading all the necessary R packages.   
+
+```{r, message=FALSE, results='hide'}
+library(tidyverse)
+library(dplyr)
+library(sqldf)
+library(ggplot2)
+library(readr)
+library(lubridate)
+library(knitr)
+```
+
+Then, load the dataset and take a brief glance: 
+
+```{r}
+rainData <- read_csv("seattleWeather_1948-2017.csv")
+kable(head(rainData), caption = "rainData")
+# Display number of entries in the dataframe
+nrow(rainData)
+```
+
+# Cleaning the data
+### Removing entries with missing values
+To ensure the analysis was as accurate as possible, I decided to remove entries from the data that had missing values. 
+
+```{r}
+# Analyze entries with missing values
+entriesWithMissingValues <- rainData %>%
+  filter(rowSums(is.na(.)) > 0)
+kable(head(entriesWithMissingValues), caption = "Entries with missing values")
+# Show how many entries have missing values
+nrow(entriesWithMissingValues)
+# Remove missing values from the dataframe
+rainData <- na.omit(rainData)
+nrow(rainData)
+```
+
+The entries for June 2nd, 1998, June 3rd, 1998, and September 5th, 2005 were all removed because they were missing precipitation values. This was likely due to an error with the sensor(s) that prevented them from getting a proper reading. As such, these entries were not very relevant to my analysis. 
+
+### Making titles of the dataframe lowercase
+I planned to use the `sqldf` R library to run SQL queries directly in R, and SQL commands are usually in all capital letters. Thus, I believed it best to change all column names within `rainData` to lowercase so the SQL queries later on would be more readable. 
+
+```{r}
+colnames(rainData) <- tolower(colnames(rainData))
+colnames(rainData)
+```
+
+
+### Removing duplicate entries
+Removing duplicates is a common practice in the data cleaning process, and improves the accuracy of the data. 
+```{r}
+# Number of entries before removing duplicates
+nrow(rainData)
+rainData <- distinct(rainData)
+# Number of entries after removing duplicates
+nrow(rainData)
+```
+
+Clearly there were no duplicate entries, since removing duplicates did not change the length of the dataframe. Thus, everything seems to be good here. 
+
+### Correcting inconsistent or erroneous values
+I decided to find the max and min values for `prcp`, `tmax`, and `tmin` to see if there were any extreme values that did not make sense in the context of the data. 
+
+```{r} 
+# Find the max and min prcp (in), tmax (°F), and tmin (°F)
+max_values <- sqldf("SELECT MAX(prcp) AS max_prcp, MIN(prcp) AS min_prcp, MAX(tmax) AS max_tmax, MIN(tmax) AS min_tmax, MAX(tmin) AS max_tmin, MIN(tmin) AS min_tmin FROM rainData")
+kable(head(max_values),align="l")
+```
+
+The maximum precipitation in a day was just over 5 inches, which could indicate a flash flood, but is within the realm of possibility. The minimum was 0 inches, which makes sense, and a maximum high of 103°, minimum high of 4°, maximum low of 71° and minimum low of 0° are all sensible as well. One concern I had was over the lowest-ever minimum temperature being 0°. I am not sure if this was actually because the lowest-ever-recorded temperature at SeaTac was 0°F, or if this indicates a limitation of the dataset. Other than that, though, the numbers all seem reasonable, so there are no erroneous values that need to be corrected.
+
+### Standardizing formats and data type conversion
+I made sure the data types of the columns were in a sensible format. 
+
+```{r}
+str(rainData) 
+```
+
+Everything in the `rainData` dataset is already in a sensible format, so no changes need to be made. 
+
+# The analysis 
+My analysis consisted of several distinct questions I wanted to find the answers to: 
+
+* What percentage of days did it rain in Seattle? 
+* What was the average precipitation, average maximum temperature and average minimum temperature during each month? 
+* How have average precipitation levels changed over time? 
+* What were the wettest and driest years on record? 
+* What were the hottest and coldest years on record? 
+* Is there a correlation between temperature and precipitation level? 
+* Which day of the week does it rain the most? 
+* Is there a correlation between average wind speed and precipitation level? 
+* Which wind direction is associated with the most precipitation? 
+
+### What percentage of days did it rain in Seattle? 
+```{r}
+# Find % of days that were rainy
+num_days <- nrow(rainData)
+num_rainy_days <- nrow(sqldf("SELECT * FROM rainData WHERE RAIN == TRUE"))
+percent_rainy_days <- (num_rainy_days / num_days) * 100
+print(percent_rainy_days)
+```
+
+About 42.66% of Seattle days were rainy. Contrary to popular belief, it is most certainly *not* always raining in Seattle! 
+
+### What was the average precipitation, average maximum temperature and average minimum temperature during each month? 
+```{r} 
+# Add new columns for year and month
+rainData <- mutate(rainData, year = substr(date, 1, 4))
+rainData <- mutate(rainData, month = substr(date, 6, 7))
+# Reorder columns so year and month are next to date
+rainData <- rainData[, c(1,6,7,2,3,4,5)]
+head(rainData, 3)
+
+# Find the average values for each month
+  averageByMonth <- rainData %>%
+    group_by(month) %>%
+    summarize(average_prcp = mean(prcp, na.rm = TRUE), average_tmax = mean(tmax, na.rm = TRUE), average_tmin = mean(tmin, na.rm = TRUE))
+# Reorder the columns for readability
+averageByMonth <- mutate(averageByMonth, month_name = c("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"))
+averageByMonth <- averageByMonth[, c(1,5,2,3,4)]
+kable(head(averageByMonth, 12), caption = "Average values for each month")
+```
+
+Visualized in a line graph, we have the following: 
+
+```{r}
+  # Graph average precipitation level for each month
+  ggplot(data = averageByMonth) +
+    geom_line(aes(x = month, y = average_prcp), linewidth = 1.5, color = "blue", linetype = "solid", group=1) +
+    labs(title = "Average Precipitation by Month",
+         x = "Month",
+         y = "Average Precipitation (in)") +
+    theme_minimal()
+```
+
+As expected, average monthly precipitation is high at the start and end of the year during winter, early spring and late fall, and very low during the late spring and summer months. Precipitation hits its maximum in November and minimum in July. 
+
+Looking at the average maximum and minimum temperatures, we see a similar pattern: 
+
+```{r}
+  # Graph average max and min temperatures for each month
+  ggplot(data = averageByMonth) +
+    geom_line(aes(x = month, y = average_tmax, color = "Max temperatures"), linewidth = 1.5, linetype = "solid", group = 1) +
+    geom_line(aes(x = month, y = average_tmin, color = "Min temperatures"), linewidth = 1.5, linetype = "solid", group = 2) +
+    labs(title = "Average Max and Min Temperatures by Month",
+         x = "Month",
+         y = "Average Temperatures (°F)") +
+    scale_color_manual(name = "Legend", values = c("Max temperatures" = "#F4A438", "Min temperatures" = "#30E1CB")) +
+    theme_minimal()
+```
+
+July had the highest average maximum temperature, and August had the highest average minimum temperature. 
+
+### How have average precipitation levels changed over time? What were the wettest and driest years on record? 
+
+First, I found the average precipitation levels for each year. Then, I looked for the wettest and driest years on record. 
+```{r}
+# Find average values for each year
+  averageByYear <- rainData %>%
+    group_by(year) %>%
+    summarize(average_prcp = mean(prcp, na.rm = TRUE), average_tmax = mean(tmax, na.rm = TRUE), average_tmin = mean(tmin, na.rm = TRUE))
+kable(head(averageByYear), caption="Averages for each year")
+  
+# Find driest and wettest year on record
+wettestYear <- sqldf("SELECT year, MAX(average_prcp) AS max_average_prcp FROM averageByYear")
+  kable(head(wettestYear), align="l")
+driestYear <- sqldf("SELECT year, MIN(average_prcp) AS min_average_prcp FROM averageByYear")
+  kable(head(driestYear), align="l")
+```
+
+We can see that the wettest year on record was 1950, with an average rainfall of ~0.065 inches/day, while 1952 was the driest with an average rainfall of ~0.151 inches/day. 
+
+Graphing the average precipitation levels for each year, we get this: 
+
+```{r}
+# Graph average precipitation for each year
+    ggplot(data = averageByYear) +
+    geom_line(aes(x = 1948:2017, y = average_prcp), linewidth = 1.5, color = "black", linetype = "solid", group=1) +
+    geom_hline(yintercept=sqldf("SELECT AVG(average_prcp) FROM averageByYear")[1,1], linetype="dashed",color="red") +
+    labs(title = "Average Yearly Precipitation",
+         x = "Year",
+         y = "Average Precipitation (in)") +
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5)) + 
+    scale_x_continuous(breaks = seq(min(averageByYear$year), max(averageByYear$year), by = 5))
+```
+
+Clearly, the largest drop in average precipitation levels occurs from about 1950 to 1953, and a large, sustained period of high average precipitation levels occurs from about 1993 to 1999. Thus, I graphed the data from 1948 to 1955 and 1990 to 2001 to examine further. 
+
+```{r}
+# Graph average precipitation from 1948 to 1955
+  averageByYear48to55 <- head(averageByYear, 8)
+  ggplot(data = averageByYear48to55) +
+    geom_line(aes(x = 1948:1955, y = average_prcp), linewidth = 1.5, color = "black", linetype = "solid") +
+    labs(title = "Average Yearly Precipitation, 1948-1955",
+         x = "Year",
+         y = "Average Precipitation (in)") +
+    geom_vline(xintercept = c(1950,1953), color = "red", linetype = "solid") + 
+    annotate(geom="label", 1951.5, 0.15, label="Duration of El Niño", fill="red", color="white") + 
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+```
+
+Looking at the graph, we can see a massive drop in average precipitation between 1950 and 1953. After some research, I found out that a cycle of the El Niño climate pattern started in 1950, leading to very dry winters. 
+
+```{r}
+# Graph average precipitation from 1990 to 2001
+  averageByYear90to01 <- sqldf("SELECT * FROM averageByYear WHERE CAST(year AS REAL) >= 1990 AND CAST(year AS REAL) <= 2001")
+  ggplot(data = averageByYear90to01) +
+    geom_line(aes(x = 1990:2001, y = average_prcp), linewidth = 1.5, color = "black", linetype = "solid") +
+    labs(title = "Average Yearly Precipitation, 1993-1999",
+        x = "Year",
+        y = "Average Precipitation (in)") +
+    geom_vline(xintercept = c(1993,1999), color = "red", linetype = "solid") + 
+    annotate(geom="label", 1996, 0.15, label="Duration of La Niña", fill="red", color="white") + 
+    theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+```
+
+Average precipitation increases significantly during the period of 1993-1999, suggesting a La Niña cycle. 
+
+### What were the hottest and coldest years on record? 
+I calculated the hottest year on record by taking the maximum sum of average maximum and minimum temperatures, and the coldest year on record by taking the minimum sum. I ended up with the following: 
+
+```{r} 
+# Find hottest and coldest years on record
+hottestYear <- sqldf("SELECT year, average_tmax, average_tmin, SUM(average_tmax + average_tmin) AS temp_sum FROM averageByYear GROUP BY year ORDER BY temp_sum DESC LIMIT 1")
+kable(hottestYear, align="l")
+coldestYear <- sqldf("SELECT year, average_tmax, average_tmin, SUM(average_tmax + average_tmin) AS temp_sum FROM averageByYear GROUP BY year ORDER BY temp_sum ASC LIMIT 1")
+kable(coldestYear, align="l")
+```
+
+The hottest year on record was 2015, with a temperature sum of ~111.27 degrees, and the coldest year was 1955, with a temperature sum of ~95.98 degrees. 
+
+### Is there a correlation between temperature and precipitation level? 
+I wanted to find out if the average temperature of a month bore any relationship to the average precipitation levels seen that month. My prediction was that a strong correlation exists between the two. 
+
+```{r, warning=FALSE}
+# Add new column for average temperature
+  averageByMonth <- mutate(averageByMonth, average_temp = (average_tmax + average_tmin)/2)
+
+# Add month_name column and rearrange for readability 
+    months <- c("January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December")
+    averageByMonth <- mutate(averageByMonth, month_name = months)
+    
+# Add colors to each month's point for visual appeal
+    month_colors <- c("#59acd9", "#59acd9", "#3ea852", "#3ea852", "#3ea852", "#d68f24", "#d68f24", "#d68f24", "#cc3f10", "#cc3f10","#59acd9","#59acd9")
+    
+# Generate the plot
+    ggplot(averageByMonth, aes(x = average_temp, y = average_prcp, label = month_name)) +
+      geom_point(aes(color = month_colors)) +
+      geom_smooth(method = "lm", se = FALSE, color="black") +
+      scale_color_identity() + 
+      geom_text(aes(vjust = -0.5), size = 3) + 
+      labs(title = "Average Temperature vs. Precipitation Levels", x = "Average Temperature (°F)", y = "Average Precipitation (in)")
+```
+
+I then calculated the regression coefficient, r^2^, to see how strong the correlation is. 
+
+```{r}
+# Find the regression coefficient
+month_regression <- lm(average_prcp ~ average_temp, data = averageByMonth)
+r_squared <- summary(month_regression)$r.squared   
+print(r_squared)
+```
+
+As we can see, there is an ~85.7% correlation between average temperature and average rainfall. This is very strong, which confirmed my initial hypothesis. 
+
+### Which day of the week does it rain the most? 
+
+```{r}
+# Add a column to rainData for day of the week
+  install.packages("lubridate")
+  library(lubridate)
+  rainData <- mutate(rainData, day_of_week = weekdays(date))
+
+  # Ensure each day occurs with roughly the same frequency (error checking)
+  day_counts <- rainData %>%
+    group_by(day_of_week = weekdays(date)) %>%
+    summarise(count = n())
+  
+  # Filter rainy days
+  rainy_days <- rainData %>%
+    filter(rain == TRUE)
+  
+  # Count the number of rainy days for each day of the week
+  rainy_day_counts <- rainy_days %>%
+    group_by(day_of_week = weekdays(date)) %>%
+    summarise(rainy_count = n())
+  
+  # Order days of the week chronologically and display the table
+  day_num <- c(5,1,6,7,4,2,3)
+  rainy_day_counts <- rainy_day_counts %>%
+  mutate(day_num = day_num) %>%
+  arrange(day_num)
+  rainy_day_counts <- rainy_day_counts[, c(1,3,2)]
+  kable(head(rainy_day_counts,12), caption="Rainy day counts")
+  
+  # Create a bar chart of rainy day counts using ggplot2
+  ggplot(rainy_day_counts, aes(x = factor(day_of_week, levels = c("Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday")), y = rainy_count, fill=day_of_week)) +
+    geom_bar(stat = "identity") +
+    scale_fill_manual(values = c("#3280ad", "#B3E0FF", "#80C9FF", "#4DA6FF", "#1A83FF", "#0066CC", "#004C99")) +
+    labs(title = "Rainfall Frequencies by Weekday", x = "Day of the Week", y = "Total Number of Rainy Days") + 
+    guides(fill="none")
+```
+
+Saturday was the day of the week with the most rainy days, while Wednesday had the least rainy days, though it is extremely close. Saturday had 72 more than Wednesday, which is a difference of less than 5% of Saturday's total. Still, it was a fun question to answer. 
+
+### Is there a correlation between wind speed and precipitation, or wind direction and precipitation? 
+
+I wanted to deepen my analysis by including wind data as well. The [Kaggle page)](https://www.kaggle.com/datasets/rtatman/did-it-rain-in-seattle-19482017) for the original dataset pointed to the [NOAA website)](https://www.ncdc.noaa.gov/cdo-web/datasets/GHCND/stations/GHCND:USW00024233/detail), where extra data was available. I downloaded a CSV file containing extra data, such as average wind speed `awnd` in mph, peak gust wind speed `wsfg`(the highest wind speed recorded for the day) in mph, and the direction of peak wind gust `wdfg` in degrees, with 0 and 360 degrees being north. 
+
+
+```{r, echo=FALSE, message=FALSE, results='hide'}
+# Load the dataset
+windData <- read_csv("windData.csv")
+```
+
+```{r}
+# Clean the dataframe
+colnames(windData) <- tolower(colnames(windData))
+windData <- sqldf("SELECT date, awnd, wdfg, wsfg FROM windData WHERE date NOT NULL AND awnd NOT NULL AND wdfg NOT NULL AND wsfg NOT NULL")
+windData <- distinct(windData)
+
+# Merge the rainData and windData dataframes
+rainData <- merge(windData, rainData, by="date", all=TRUE)
+windData <- sqldf("SELECT date, awnd, wsfg, wdfg, prcp FROM rainData WHERE awnd NOT NULL AND wdfg NOT NULL AND wsfg NOT NULL")
+kable(head(windData), caption="Merged dataframe for wind analysis")
+nrow(windData)
+```
+
+Upon inspection of the new data, I found that wind readings were only available from 1984-01-01 to 1996-09-30. This isn't a big deal since there are still 4500+ days available, which is more than enough for a solid analysis. 
+
+### Is there a correlation between average wind speed and precipitation level? 
+
+In order to make a scatterplot, I took a random sample of 200 days when wind data was recorded. 
+```{r}
+# Look for correlation between avg wind speed and precipitation level
+windSample <- sample_n(windData, 200)
+windSample <- sqldf("SELECT date, awnd, prcp FROM windSample")
+kable(head(windSample), caption="Sample of wind data", align="l")
+```
+
+```{r}
+# Create the scatterplot
+ggplot(windSample, aes(x = awnd, y = prcp)) +
+  geom_point(color="blue") +
+  geom_smooth(method = "lm", se = FALSE, color="black") +
+  labs(title = "Wind Speed vs. Precipitation Levels", x = "Average Wind Speed (mph)", y = "Precipitation (in)")
+```
+
+```{r}
+# Find the regression coefficient
+r_squared_windSpeed <- summary(lm(awnd ~ prcp, data = windSample))$r.squared
+print(r_squared_windSpeed)
+```
+
+The correlation coefficient r^2^ is very small, so there is no meaningful correlation between wind speed and precipitation levels. 
+
+### Which wind direction is associated with the most precipitation? 
+My hypothesis was that it rains more when the wind is blowing east, since it was my understanding that rain clouds often form over the ocean or Puget Sound and subsequently get blown over land where they can then dump their precipitation on Seattle.
+
+First, I was suspicious that some of the values in wdfg might not be multiples of 45, which they would need to be in order to be a valid direction (0/360 is north, 45 northeast, 90 east, 135 southeast, 180 south, 225 southwest, 270 west, and 315 northwest). I filtered those out so only the values that made sense were retained. 
+
+```{r}
+```
+
+```{r}
+# Find average precipitation for each wind direction
+prcpPerWindDirection <- sqldf("SELECT wdfg AS wind_angle, AVG(prcp) AS avg_prcp FROM windData WHERE wdfg%45 == 0 GROUP BY wdfg")
+prcpPerWindDirection <- mutate(prcpPerWindDirection, dir=c("NE", "E", "SE", "S", "SW", "W", "NW", "N"))
+prcpPerWindDirection <- prcpPerWindDirection[, c(1,3,2)]
+kable(head(prcpPerWindDirection, 8))
+```
+
+```{r}
+# Show data in a bar graph
+ggplot(prcpPerWindDirection, aes(x = dir, y = avg_prcp)) +
+  geom_bar(stat = "identity", fill = "#34e8eb") +
+  labs(title = "Average Precipitation by Wind Direction", x = "Wind Direction", y = "Average Precipitation (in)") +
+  theme(axis.text.x = element_text(angle = 0, hjust = 1))
+```
+
+Contrary to my prediction, winds blowing south were associated with the most rainfall. 
+
+# Wrap-up
+I am surprised by how many insights I uncovered from this Seattle rain data. It was fun to dive in and see what I could find. I hope you enjoyed this analysis, and be sure to check out my Kaggle page for more projects!
